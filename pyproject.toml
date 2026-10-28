@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iamprover"
-version = "0.6.0"
+version = "0.7.1"
 description = "Formally verify security invariants over AWS IAM policies using an SMT solver (Z3), with counterexample traces."
 readme = "README.md"
 license = "Apache-2.0"
@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff~=0.16.0"]
 
 [project.scripts]
 iamprover = "iamprover.cli:main"

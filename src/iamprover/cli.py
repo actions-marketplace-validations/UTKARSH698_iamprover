@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from iamprover.engine.reachability import DEFAULT_MAX_HOPS, ReachabilityIndex
+from iamprover.engine.reachability import DEFAULT_MAX_HOPS, RELATIONS, ReachabilityIndex
 from iamprover.engine.solver import check_all
 from iamprover.engine.trust import analyze_trust
 from iamprover.invariants import load_invariants
@@ -23,6 +23,13 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_VIOLATIONS = 2
 
+# --closure value -> reachability relations it enables.
+CLOSURE_MODES = {
+    "assume-role": ("assume-role",),
+    "pass-role": ("pass-role",),
+    "all": RELATIONS,
+}
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -38,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument(
         "--gaad",
         help="Live account snapshot JSON (`aws iam get-account-authorization-details`)",
+    )
+    verify.add_argument(
+        "--tf-account-id",
+        metavar="ACCOUNT_ID",
+        help="AWS account id for --tf-plan principal ARNs (default: inferred from the plan)",
     )
     verify.add_argument("--invariants", help="Invariant spec YAML")
     verify.add_argument("--format", choices=["text", "json"], default="text")
@@ -92,17 +104,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     verify.add_argument(
         "--closure",
-        choices=["none", "assume-role"],
+        choices=["none", *CLOSURE_MODES],
         default="none",
         help="Widen every invariant to also cover principals reachable via a "
         "closure relation, not just direct permissions. 'assume-role' follows "
-        "sts:AssumeRole chains (see --max-hops)",
+        "sts:AssumeRole chains; 'pass-role' follows iam:PassRole into Lambda, "
+        "EC2, CloudFormation, Glue, and SageMaker; 'all' follows both "
+        "(see --max-hops)",
     )
     verify.add_argument(
         "--max-hops",
         type=int,
         default=DEFAULT_MAX_HOPS,
-        help=f"Max chain length for --closure assume-role (default: {DEFAULT_MAX_HOPS})",
+        help=f"Max chain length for --closure (default: {DEFAULT_MAX_HOPS})",
     )
 
     args = parser.parse_args(argv)
@@ -114,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.gaad:
             account = load_gaad(args.gaad)
         elif args.tf_plan:
-            account = load_tf_plan(args.tf_plan)
+            account = load_tf_plan(args.tf_plan, args.tf_account_id)
         else:
             account = load_account(args.account)
         invariants = load_invariants(args.invariants) if args.invariants else []
@@ -126,6 +140,19 @@ def main(argv: list[str] | None = None) -> int:
             account.rcps = list(account.rcps) + load_policy_list(args.rcp)
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    for warning in account.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    # An empty model makes every invariant hold vacuously — never report that
+    # as a proof.
+    if not account.principals:
+        print(
+            "error: no IAM principals found in the input; refusing to report "
+            "invariants as proven over an empty account",
+            file=sys.stderr,
+        )
         return EXIT_ERROR
 
     if args.check_anonymous:
@@ -141,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if invariants:
         reachability = (
-            ReachabilityIndex(account, args.max_hops) if args.closure == "assume-role" else None
+            ReachabilityIndex(account, args.max_hops, CLOSURE_MODES[args.closure])
+            if args.closure != "none"
+            else None
         )
         results = check_all(account, invariants, reachability)
         sections.append(render_json(results) if as_json else render_text(results))
